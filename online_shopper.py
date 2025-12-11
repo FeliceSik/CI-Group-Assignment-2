@@ -12,7 +12,8 @@ from sklearn.metrics import (
     confusion_matrix,
     roc_auc_score,
     roc_curve,
-    f1_score
+    f1_score,
+    ConfusionMatrixDisplay
 )
 from sklearn.decomposition import PCA
 
@@ -25,8 +26,11 @@ np.set_printoptions(precision=3, suppress=True)
 # True count will become TARGET_RATIO * False count (in TRAIN only)
 # Example: 0.8 means True ~ 80% of False
 # ===========================
-TARGET_RATIO = 0.8
+TARGET_RATIO = 0.9
 # ===========================
+
+# Class label names (for reports and plots)
+CLASS_NAMES = ["No purchase", "Purchase"]  # 0 -> No purchase, 1 -> Purchase
 
 
 # 1. Load dataset
@@ -62,7 +66,7 @@ print("\nFeature shape:", X.shape)
 print("Target shape:", y.shape)
 
 
-# 4. Train / validation / test split
+# 4. Train / validation / test split (70 / 15 / 15)
 X_train, X_temp, y_train, y_temp = train_test_split(
     X,
     y,
@@ -159,9 +163,10 @@ X_val_pca = pca.transform(X_val_proc_dense)
 X_test_pca = pca.transform(X_test_proc_dense)
 
 input_dim = X_train_pca.shape[1]
+print("\nInput dimension after PCA:", input_dim)
 
 
-# 7. Class weights
+# 7. Class weights (on oversampled train)
 classes = np.unique(y_train)
 class_weights = compute_class_weight(
     class_weight="balanced",
@@ -194,9 +199,10 @@ def build_model(input_dim):
     return model
 
 model = build_model(input_dim)
+model.summary()
 
 
-# 9. Train
+# 9. Train with early stopping
 early_stop = tf.keras.callbacks.EarlyStopping(
     monitor="val_auc",
     patience=5,
@@ -217,7 +223,7 @@ history = model.fit(
 
 history_dict = history.history
 
-# ---- NEW: training vs validation curves (AUC, loss, accuracy) ----
+# Training vs validation curves
 plt.figure()
 plt.plot(history_dict["auc"], label="Train AUC")
 plt.plot(history_dict["val_auc"], label="Val AUC")
@@ -271,14 +277,24 @@ print("\n==============================")
 print("Classification Report (TRAIN after oversampling)")
 print("(This is optimistic; for analysis only)")
 print("==============================")
-print(classification_report(y_train, train_pred, digits=3))
+print(classification_report(y_train, train_pred, target_names=CLASS_NAMES, digits=3))
+
+cm_train = confusion_matrix(y_train, train_pred)
 print("Confusion Matrix (TRAIN):")
-print(confusion_matrix(y_train, train_pred))
+print(cm_train)
+
+disp_train = ConfusionMatrixDisplay(confusion_matrix=cm_train,
+                                    display_labels=CLASS_NAMES)
+disp_train.plot(values_format="d")
+plt.title("Confusion Matrix (TRAIN after oversampling)")
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+plt.show()
 
 
-# 11B. Normal TEST evaluation (recommended for official reporting)
+# 11B. TEST evaluation (main results)
 
-# Keras evaluation (includes ROC-AUC metric from the model)
+# Keras evaluation (includes AUC + accuracy)
 test_results = model.evaluate(X_test_pca, y_test, verbose=0)
 print("\nKeras test results:")
 for name, value in zip(model.metrics_names, test_results):
@@ -295,9 +311,19 @@ print("\n==============================")
 print("Classification Report (TEST, trained with oversampling)")
 print("(threshold = best F1 on validation)")
 print("==============================")
-print(classification_report(y_test, test_pred, digits=3))
+print(classification_report(y_test, test_pred, target_names=CLASS_NAMES, digits=3))
+
+cm_test = confusion_matrix(y_test, test_pred)
 print("Confusion Matrix (TEST):")
-print(confusion_matrix(y_test, test_pred))
+print(cm_test)
+
+disp_test = ConfusionMatrixDisplay(confusion_matrix=cm_test,
+                                   display_labels=CLASS_NAMES)
+disp_test.plot(values_format="d")
+plt.title("Confusion Matrix (TEST)")
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+plt.show()
 
 # ROC curve on test
 fpr, tpr, _ = roc_curve(y_test, test_prob)
@@ -311,7 +337,7 @@ plt.legend()
 plt.show()
 
 
-# 12. Cross-validation with AUC-ROC (5-fold) (unchanged)
+# 12. Cross-validation with AUC-ROC (5-fold)
 print("\n===== 5-Fold Stratified Cross-Validation (AUC only) =====")
 
 kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
