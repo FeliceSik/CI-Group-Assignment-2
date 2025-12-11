@@ -26,7 +26,7 @@ np.set_printoptions(precision=3, suppress=True)
 # True count will become TARGET_RATIO * False count (in TRAIN only)
 # Example: 0.8 means True ~ 80% of False
 # ===========================
-TARGET_RATIO = 0.9
+TARGET_RATIO = 0.8
 # ===========================
 
 # Class label names (for reports and plots)
