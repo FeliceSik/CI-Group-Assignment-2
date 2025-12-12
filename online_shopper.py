@@ -12,8 +12,7 @@ from sklearn.metrics import (
     confusion_matrix,
     roc_auc_score,
     roc_curve,
-    f1_score,
-    ConfusionMatrixDisplay
+    f1_score
 )
 from sklearn.decomposition import PCA
 
@@ -23,18 +22,66 @@ from tensorflow.keras import layers, models
 np.set_printoptions(precision=3, suppress=True)
 
 # ===========================
-# True count will become TARGET_RATIO * False count (in TRAIN only)
-# Example: 0.8 means True ~ 80% of False
+# TRAIN oversampling target:
+# True count will become TARGET_RATIO * False count
 # ===========================
-TARGET_RATIO = 0.8
-# ===========================
+TARGET_RATIO = 0.9
 
-# Class label names (for reports and plots)
-CLASS_NAMES = ["No purchase", "Purchase"]  # 0 -> No purchase, 1 -> Purchase
+# 0 -> Non-Revenue, 1 -> Revenue
+CLASS_NAMES = ["Non-Revenue", "Revenue"]  
 
 
-# 1. Load dataset
-data_path = "online_shoppers_intention.csv"   # make sure this matches your file name
+# Helper: convert sparse matrices to dense numpy arrays
+def to_dense(Xm):
+    return Xm.toarray() if hasattr(Xm, "toarray") else Xm
+
+
+# Helper: plot confusion matrix 
+def plot_confusion(cm, title):
+    plt.figure()
+    plt.imshow(cm, interpolation="nearest")
+    plt.title(title)
+    plt.colorbar()
+
+    plt.xticks([0, 1], [f"Pred {CLASS_NAMES[0]}", f"Pred {CLASS_NAMES[1]}"])
+    plt.yticks([0, 1], [f"True {CLASS_NAMES[0]}", f"True {CLASS_NAMES[1]}"])
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(j, i, str(cm[i, j]), ha="center", va="center")
+
+    plt.ylabel("True label")
+    plt.xlabel("Predicted label")
+    plt.tight_layout()
+    plt.show()
+
+
+# Build model
+def build_model(input_dim):
+    model = models.Sequential([
+        layers.Input(shape=(input_dim,)),
+        layers.Dense(64, activation="relu"),
+        layers.Dropout(0.3),
+        layers.Dense(32, activation="relu"),
+        layers.Dropout(0.3),
+        layers.Dense(1, activation="sigmoid")
+    ])
+
+    model.compile(
+        optimizer="adam",
+        loss="binary_crossentropy",
+        metrics=[
+            tf.keras.metrics.AUC(name="auc"),
+            tf.keras.metrics.BinaryAccuracy(name="accuracy")
+        ]
+    )
+    return model
+
+
+# ============================================================
+# 1) Load dataset
+# ============================================================
+data_path = "online_shoppers_intention.csv"
 df = pd.read_csv(data_path)
 
 print("Shape of dataset:", df.shape)
@@ -42,45 +89,40 @@ print("\nColumns:", df.columns)
 print("\nFirst 5 rows:")
 print(df.head())
 
-
-# 2. Target distribution (Revenue) - ORIGINAL DATA (will remain imbalanced)
+# Original distribution info
 print("\nRevenue value counts (ORIGINAL DATA):")
 print(df["Revenue"].value_counts())
 print("\nRevenue proportion (ORIGINAL DATA):")
 print(df["Revenue"].value_counts(normalize=True))
 
+# Original distribution plot with Non-Revenue / Revenue on x-axis
 plt.figure()
-df["Revenue"].value_counts().plot(kind="bar")
+orig_counts = df["Revenue"].astype(int).replace({0: "Non-Revenue", 1: "Revenue"}).value_counts()
+orig_counts.plot(kind="bar")
 plt.title("Class Distribution of Revenue (ORIGINAL DATA)")
 plt.xticks(rotation=0)
-plt.xlabel("Revenue")
+plt.xlabel("Class")
 plt.ylabel("Count")
+plt.tight_layout()
 plt.show()
 
-
-# 3. Features (X) and target (y)
+# Features/target
 X = df.drop("Revenue", axis=1)
-y = df["Revenue"].astype(int)   # True/False -> 1/0
+y = df["Revenue"].astype(int)
 
 print("\nFeature shape:", X.shape)
 print("Target shape:", y.shape)
 
 
-# 4. Train / validation / test split (70 / 15 / 15)
+# ============================================================
+# 2) Train / Val / Test split
+# ============================================================
 X_train, X_temp, y_train, y_temp = train_test_split(
-    X,
-    y,
-    test_size=0.30,
-    random_state=42,
-    stratify=y
+    X, y, test_size=0.30, random_state=42, stratify=y
 )
 
 X_val, X_test, y_val, y_test = train_test_split(
-    X_temp,
-    y_temp,
-    test_size=0.50,
-    random_state=42,
-    stratify=y_temp
+    X_temp, y_temp, test_size=0.50, random_state=42, stratify=y_temp
 )
 
 print("\nTrain size:", X_train.shape[0])
@@ -90,11 +132,14 @@ print("Test size:", X_test.shape[0])
 print("\nTrain Revenue counts (BEFORE oversampling):")
 print(y_train.value_counts())
 
+# Save pre-oversampling train split (if needed later)
+X_train_base = X_train.copy()
+y_train_base = y_train.copy()
 
-# -------------------------------
-# Oversampling (TRAIN ONLY) to ALMOST balance counts
-# True count = TARGET_RATIO * False count
-# -------------------------------
+
+# ============================================================
+# 3) Oversampling TRAIN ONLY (to chosen TARGET_RATIO)
+# ============================================================
 train_df = X_train.copy()
 train_df["Revenue"] = y_train.values
 
@@ -120,16 +165,21 @@ print(f"\nTARGET_RATIO = {TARGET_RATIO}")
 print("Train Revenue counts (AFTER oversampling):")
 print(y_train.value_counts())
 
+# Oversampled train distribution plot with Non-Revenue / Revenue on x-axis
 plt.figure()
-y_train.value_counts().plot(kind="bar")
-plt.title(f"Revenue Distribution (TRAIN after oversampling, ratio={TARGET_RATIO})")
+train_counts = y_train.replace({0: "Non-Revenue", 1: "Revenue"}).value_counts()
+train_counts.plot(kind="bar")
+plt.title(f"Class Distribution (TRAIN after oversampling, ratio={TARGET_RATIO})")
 plt.xticks(rotation=0)
-plt.xlabel("Revenue")
+plt.xlabel("Class")
 plt.ylabel("Count")
+plt.tight_layout()
 plt.show()
 
 
-# 5. Preprocessing
+# ============================================================
+# 4) Preprocessing + PCA
+# ============================================================
 categorical_cols = ["Month", "VisitorType", "Weekend"]
 numeric_cols = [c for c in X.columns if c not in categorical_cols]
 
@@ -147,62 +197,32 @@ X_train_proc = preprocessor.fit_transform(X_train)
 X_val_proc = preprocessor.transform(X_val)
 X_test_proc = preprocessor.transform(X_test)
 
-def to_dense(Xm):
-    return Xm.toarray() if hasattr(Xm, "toarray") else Xm
+X_train_dense = to_dense(X_train_proc)
+X_val_dense = to_dense(X_val_proc)
+X_test_dense = to_dense(X_test_proc)
 
-X_train_proc_dense = to_dense(X_train_proc)
-X_val_proc_dense = to_dense(X_val_proc)
-X_test_proc_dense = to_dense(X_test_proc)
-
-
-# 6. PCA
 pca = PCA(n_components=0.95, random_state=42)
-
-X_train_pca = pca.fit_transform(X_train_proc_dense)
-X_val_pca = pca.transform(X_val_proc_dense)
-X_test_pca = pca.transform(X_test_proc_dense)
+X_train_pca = pca.fit_transform(X_train_dense)
+X_val_pca = pca.transform(X_val_dense)
+X_test_pca = pca.transform(X_test_dense)
 
 input_dim = X_train_pca.shape[1]
-print("\nInput dimension after PCA:", input_dim)
 
 
-# 7. Class weights (on oversampled train)
+# ============================================================
+# 5) Class weights
+# ============================================================
 classes = np.unique(y_train)
-class_weights = compute_class_weight(
-    class_weight="balanced",
-    classes=classes,
-    y=y_train
-)
+class_weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
 class_weight_dict = {cls: w for cls, w in zip(classes, class_weights)}
 print("\nClass weights:", class_weight_dict)
 
 
-# 8. Build model
-def build_model(input_dim):
-    model = models.Sequential([
-        layers.Input(shape=(input_dim,)),
-        layers.Dense(64, activation="relu"),
-        layers.Dropout(0.3),
-        layers.Dense(32, activation="relu"),
-        layers.Dropout(0.3),
-        layers.Dense(1, activation="sigmoid")
-    ])
-
-    model.compile(
-        optimizer="adam",
-        loss="binary_crossentropy",
-        metrics=[
-            tf.keras.metrics.AUC(name="auc"),
-            tf.keras.metrics.BinaryAccuracy(name="accuracy")
-        ]
-    )
-    return model
-
+# ============================================================
+# 6) Train model
+# ============================================================
 model = build_model(input_dim)
-model.summary()
 
-
-# 9. Train with early stopping
 early_stop = tf.keras.callbacks.EarlyStopping(
     monitor="val_auc",
     patience=5,
@@ -211,8 +231,7 @@ early_stop = tf.keras.callbacks.EarlyStopping(
 )
 
 history = model.fit(
-    X_train_pca,
-    y_train,
+    X_train_pca, y_train,
     validation_data=(X_val_pca, y_val),
     epochs=50,
     batch_size=64,
@@ -223,7 +242,7 @@ history = model.fit(
 
 history_dict = history.history
 
-# Training vs validation curves
+# Curves: AUC
 plt.figure()
 plt.plot(history_dict["auc"], label="Train AUC")
 plt.plot(history_dict["val_auc"], label="Val AUC")
@@ -231,8 +250,10 @@ plt.xlabel("Epoch")
 plt.ylabel("AUC")
 plt.title("Training vs Validation AUC")
 plt.legend()
+plt.tight_layout()
 plt.show()
 
+# Curves: Loss
 plt.figure()
 plt.plot(history_dict["loss"], label="Train loss")
 plt.plot(history_dict["val_loss"], label="Val loss")
@@ -240,67 +261,85 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Training vs Validation Loss")
 plt.legend()
+plt.tight_layout()
 plt.show()
 
+# Curves: Accuracy + dotted line at intersection
 if "accuracy" in history_dict and "val_accuracy" in history_dict:
+    train_acc = history_dict["accuracy"]
+    val_acc = history_dict["val_accuracy"]
+    epochs = np.arange(1, len(train_acc) + 1)
+
+    diff = np.abs(np.array(train_acc) - np.array(val_acc))
+    best_epoch = int(np.argmin(diff)) + 1  # +1 because epochs start at 1
+
     plt.figure()
-    plt.plot(history_dict["accuracy"], label="Train accuracy")
-    plt.plot(history_dict["val_accuracy"], label="Val accuracy")
+    plt.plot(epochs, train_acc, label="Train accuracy")
+    plt.plot(epochs, val_acc, label="Validation accuracy")
+
+    # dotted vertical line at "intersection"
+    plt.axvline(
+        best_epoch,
+        linestyle="--",
+        linewidth=1,
+        label=f"Intersection epoch = {best_epoch}"
+    )
+
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
     plt.title("Training vs Validation Accuracy")
     plt.legend()
+    plt.tight_layout()
     plt.show()
 
 
-# 10. Choose threshold that maximizes F1 on validation
+# ============================================================
+# 7) Pick threshold that maximizes F1 on validation
+# ============================================================
 val_prob = model.predict(X_val_pca).ravel()
-thresholds = np.linspace(0.0, 1.0, 1001)
+thr_grid = np.linspace(0.0, 1.0, 1001)
 
-f1_scores = []
-for t in thresholds:
+val_f1s = []
+for t in thr_grid:
     val_pred = (val_prob >= t).astype(int)
-    f1_scores.append(f1_score(y_val, val_pred, zero_division=0))
+    val_f1s.append(f1_score(y_val, val_pred, zero_division=0))
 
-best_idx = int(np.argmax(f1_scores))
-best_threshold = float(thresholds[best_idx])
+best_idx = int(np.argmax(val_f1s))
+best_threshold = float(thr_grid[best_idx])
 
 print(f"\nBest threshold (max F1 on validation): {best_threshold:.3f}")
-print(f"Best validation F1: {f1_scores[best_idx]:.4f}")
+print(f"Best validation F1: {val_f1s[best_idx]:.4f}")
 
 
-# 11A. Classification report on TRAIN (after oversampling)
+# ============================================================
+# 8) Reports + Confusion matrices + ROC
+# ============================================================
+# TRAIN report (after oversampling)
 train_prob = model.predict(X_train_pca).ravel()
 train_pred = (train_prob >= best_threshold).astype(int)
 
 print("\n==============================")
 print("Classification Report (TRAIN after oversampling)")
-print("(This is optimistic; for analysis only)")
+print("(Optimistic; for analysis only)")
 print("==============================")
-print(classification_report(y_train, train_pred, target_names=CLASS_NAMES, digits=3))
+print(classification_report(
+    y_train,
+    train_pred,
+    digits=3,
+    target_names=CLASS_NAMES
+))
 
 cm_train = confusion_matrix(y_train, train_pred)
 print("Confusion Matrix (TRAIN):")
 print(cm_train)
+plot_confusion(cm_train, "Confusion Matrix (TRAIN after oversampling)")
 
-disp_train = ConfusionMatrixDisplay(confusion_matrix=cm_train,
-                                    display_labels=CLASS_NAMES)
-disp_train.plot(values_format="d")
-plt.title("Confusion Matrix (TRAIN after oversampling)")
-plt.xlabel("Predicted label")
-plt.ylabel("True label")
-plt.show()
-
-
-# 11B. TEST evaluation (main results)
-
-# Keras evaluation (includes AUC + accuracy)
+# TEST report 
 test_results = model.evaluate(X_test_pca, y_test, verbose=0)
 print("\nKeras test results:")
 for name, value in zip(model.metrics_names, test_results):
     print(f"{name}: {value:.4f}")
 
-# Sklearn ROC-AUC + report
 test_prob = model.predict(X_test_pca).ravel()
 test_pred = (test_prob >= best_threshold).astype(int)
 
@@ -311,21 +350,18 @@ print("\n==============================")
 print("Classification Report (TEST, trained with oversampling)")
 print("(threshold = best F1 on validation)")
 print("==============================")
-print(classification_report(y_test, test_pred, target_names=CLASS_NAMES, digits=3))
+print(classification_report(
+    y_test,
+    test_pred,
+    digits=3,
+    target_names=CLASS_NAMES
+))
 
 cm_test = confusion_matrix(y_test, test_pred)
 print("Confusion Matrix (TEST):")
 print(cm_test)
+plot_confusion(cm_test, "Confusion Matrix (TEST, trained with oversampling)")
 
-disp_test = ConfusionMatrixDisplay(confusion_matrix=cm_test,
-                                   display_labels=CLASS_NAMES)
-disp_test.plot(values_format="d")
-plt.title("Confusion Matrix (TEST)")
-plt.xlabel("Predicted label")
-plt.ylabel("True label")
-plt.show()
-
-# ROC curve on test
 fpr, tpr, _ = roc_curve(y_test, test_prob)
 plt.figure()
 plt.plot(fpr, tpr, label=f"ROC curve (AUC = {test_auc:.3f})")
@@ -334,10 +370,13 @@ plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
 plt.title("ROC Curve on Test Set")
 plt.legend()
+plt.tight_layout()
 plt.show()
 
 
-# 12. Cross-validation with AUC-ROC (5-fold)
+# ============================================================
+# 9) 5-Fold Stratified Cross-validation with AUC only
+# ============================================================
 print("\n===== 5-Fold Stratified Cross-Validation (AUC only) =====")
 
 kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -352,8 +391,8 @@ for train_idx, val_idx in kfold.split(X, y):
 
     preprocessor_cv = ColumnTransformer(
         transformers=[
-            ("num", numeric_transformer, numeric_cols),
-            ("cat", categorical_transformer, categorical_cols),
+            ("num", StandardScaler(), numeric_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
         ]
     )
 
@@ -364,19 +403,14 @@ for train_idx, val_idx in kfold.split(X, y):
     X_va_dense = to_dense(X_va_proc)
 
     pca_cv = PCA(n_components=0.95, random_state=42)
-    X_tr_pca = pca_cv.fit_transform(X_tr_dense)
-    X_va_pca = pca_cv.transform(X_va_dense)
+    X_tr_pca_cv = pca_cv.fit_transform(X_tr_dense)
+    X_va_pca_cv = pca_cv.transform(X_va_dense)
 
     classes_cv = np.unique(y_tr)
-    cw = compute_class_weight(
-        class_weight="balanced",
-        classes=classes_cv,
-        y=y_tr
-    )
+    cw = compute_class_weight(class_weight="balanced", classes=classes_cv, y=y_tr)
     cw_dict = {cls: w for cls, w in zip(classes_cv, cw)}
 
-    model_cv = build_model(X_tr_pca.shape[1])
-
+    model_cv = build_model(X_tr_pca_cv.shape[1])
     early_stop_cv = tf.keras.callbacks.EarlyStopping(
         monitor="val_auc",
         patience=5,
@@ -386,8 +420,8 @@ for train_idx, val_idx in kfold.split(X, y):
     )
 
     model_cv.fit(
-        X_tr_pca, y_tr,
-        validation_data=(X_va_pca, y_va),
+        X_tr_pca_cv, y_tr,
+        validation_data=(X_va_pca_cv, y_va),
         epochs=50,
         batch_size=64,
         class_weight=cw_dict,
@@ -395,13 +429,14 @@ for train_idx, val_idx in kfold.split(X, y):
         verbose=0
     )
 
-    y_va_prob = model_cv.predict(X_va_pca).ravel()
+    y_va_prob = model_cv.predict(X_va_pca_cv).ravel()
     fold_auc = roc_auc_score(y_va, y_va_prob)
     fold_aucs.append(fold_auc)
     print(f"Fold {fold_idx} ROC-AUC: {fold_auc:.4f}")
 
     fold_idx += 1
 
+# Summary of cross-validation AUCs
 print("\nCross-validation AUCs:", [round(a, 4) for a in fold_aucs])
 print("Mean CV AUC:", np.mean(fold_aucs).round(4))
 print("Std CV AUC:", np.std(fold_aucs).round(4))
